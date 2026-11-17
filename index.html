@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ForgeIQ | Smart Manufacturing</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">F</div>
+        <div><strong>FORGE<span>IQ</span></strong><small>INDUSTRIAL INTELLIGENCE</small></div>
+      </div>
+      <div class="nav-label">WORKSPACE</div>
+      <a class="nav-item active" href="#"><span>▦</span> Overview</a>
+      <a class="nav-item" href="#camera-panel"><span>◉</span> Vision control</a>
+      <a class="nav-item" href="#analytics"><span>⌁</span> Analytics</a>
+      <a class="nav-item" href="#activity"><span>≡</span> Activity log</a>
+      <div class="sidebar-bottom">
+        <div class="connection"><i></i><div><b>LOCAL SYSTEM</b><small>Private workstation</small></div></div>
+        <div class="sidebar-note">SMART FACTORY<br>MONITORING SUITE <span>v1.0</span></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">MANUFACTURING / OVERVIEW</div>
+          <h1>Operations overview</h1>
+          <p class="subtitle">Real-time gesture-based machine monitoring</p>
+        </div>
+        <div class="top-right">
+          <div class="live-pill"><i></i> LIVE MONITORING</div>
+          <div class="clock" id="clock">--</div>
+        </div>
+      </header>
+
+      <section class="welcome-strip">
+        <div><div class="eyebrow pale">CONTROL CENTER</div><h2>Good to see you, Operator.</h2><p>Monitor your workstation and manage the simulated operating mode using hand gestures.</p></div>
+        <div class="welcome-icon">⌁</div>
+      </section>
+
+      <section class="metrics-grid">
+        <article class="metric-card">
+          <div class="metric-top"><span>MACHINE STATUS</span><span class="metric-icon">◉</span></div>
+          <div class="metric-value" id="machine-status">STOPPED</div>
+          <div class="metric-foot"><span class="status-dot" id="status-dot"></span><span id="mode-label">Mode: IDLE</span></div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-top"><span>PRODUCTION EVENTS</span><span class="metric-icon">▤</span></div>
+          <div class="metric-value" id="production-events">0</div>
+          <div class="metric-foot">Gesture activations recorded</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-top"><span>SIMULATED EFFICIENCY</span><span class="metric-icon">◌</span></div>
+          <div class="metric-value"><span id="efficiency">85</span><small>%</small></div>
+          <div class="progress"><span id="efficiency-bar"></span></div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-top"><span>VISION INPUT</span><span class="metric-icon">◎</span></div>
+          <div class="metric-value small-value" id="camera-status">CONNECTING</div>
+          <div class="metric-foot" id="gesture-label">Gesture: NO HAND</div>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel camera-panel" id="camera-panel">
+          <div class="panel-heading"><div><div class="eyebrow">COMPUTER VISION</div><h3>Live vision feed</h3></div><span class="feed-tag"><i></i> CAMERA FEED</span></div>
+          <div class="video-wrap"><img src="{{ url_for('video_feed') }}" alt="Live webcam feed" id="camera-feed"><div class="video-overlay">LIVE • HAND TRACKING</div></div>
+          <div class="camera-meta"><span>AI hand landmark detection</span><span id="finger-label">Fingers detected: 0</span></div>
+        </article>
+
+        <article class="panel command-panel">
+          <div class="panel-heading"><div><div class="eyebrow">GESTURE INTERFACE</div><h3>Command reference</h3></div><span class="mini-badge">4 COMMANDS</span></div>
+          <div class="command-list">
+            <div class="command-row"><div class="finger-count">01</div><div><b>Production</b><small>One raised finger</small></div><span class="command-arrow">↗</span></div>
+            <div class="command-row"><div class="finger-count">02</div><div><b>Inspection</b><small>Two raised fingers</small></div><span class="command-arrow">↗</span></div>
+            <div class="command-row"><div class="finger-count">03</div><div><b>Maintenance</b><small>Three raised fingers</small></div><span class="command-arrow">↗</span></div>
+            <div class="command-row"><div class="finger-count">04</div><div><b>Pause</b><small>Four raised fingers</small></div><span class="command-arrow">↗</span></div>
+          </div>
+          <div class="tip-box"><b>Operator tip</b><p>Keep your palm facing the camera and hold a gesture steadily for a moment for reliable recognition.</p></div>
+        </article>
+      </section>
+
+      <section class="bottom-grid">
+        <article class="panel analytics-panel" id="analytics">
+          <div class="panel-heading"><div><div class="eyebrow">PERFORMANCE</div><h3>Efficiency trend</h3></div><span class="mini-badge">SIMULATED DATA</span></div>
+          <div class="chart-summary"><strong id="chart-current">85%</strong><span>Current simulated efficiency</span></div>
+          <canvas id="efficiency-chart" height="145"></canvas>
+        </article>
+        <article class="panel activity-panel" id="activity">
+          <div class="panel-heading"><div><div class="eyebrow">SYSTEM EVENTS</div><h3>Recent activity</h3></div><span class="mini-badge">LATEST FIRST</span></div>
+          <div class="activity-list" id="activity-list"><div class="empty-state">Waiting for system events…</div></div>
+        </article>
+      </section>
+      <footer><span>FORGEIQ INDUSTRIAL INTELLIGENCE</span><span>DEMO ENVIRONMENT • NOT CONNECTED TO PHYSICAL MACHINERY</span></footer>
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
