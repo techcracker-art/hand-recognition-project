@@ -58,6 +58,7 @@ function loop() {
     const result = landmarker.detectForVideo(video, performance.now());
     const points = result.landmarks?.[0];
     if (points) {
+      handWasVisible = true;
       draw(points);
       const count = fingerCount(points);
       const candidate = gestureName(count);
@@ -73,7 +74,7 @@ function loop() {
       draw(null); history = []; lastGesture = null;
       $("finger-label").textContent = "Fingers: 0";
       $("gesture-result").textContent = "Gesture: NO HAND";
-      postRelease();
+      if (handWasVisible) { postRelease(); handWasVisible = false; }
     }
   }
   raf = requestAnimationFrame(loop);
@@ -105,7 +106,7 @@ function stopCamera() {
   if (stream) stream.getTracks().forEach(t=>t.stop());
   if (landmarker) landmarker.close();
   stream = null; landmarker = null; video.srcObject = null; draw(null);
-  history=[]; lastGesture=null; $("camera-toggle").textContent="Start camera";
+  history=[]; lastGesture=null; handWasVisible=false; $("camera-toggle").textContent="Start camera";
   $("camera-status").textContent="NOT STARTED"; $("gesture-result").textContent="Gesture: NO HAND";
   $("finger-label").textContent="Fingers: 0"; $("camera-help").textContent="Camera stopped.";
   postRelease();
