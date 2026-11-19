@@ -1,208 +1,248 @@
-import os, io, csv, time, random, sqlite3, threading
+import csv
+import hmac
+import io
+import os
+import random
+import threading
+import time
 from datetime import datetime
-from collections import deque
-import cv2, mediapipe as mp
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, make_response, flash
-from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
 
-BASE=os.path.dirname(os.path.abspath(__file__))
-os.makedirs(os.path.join(BASE,"instance"),exist_ok=True)
-DB=os.path.join(BASE,"instance","forgeiq.db")
-app=Flask(__name__)
-app.secret_key=os.environ.get("FORGEIQ_SECRET","demo-secret-change-before-deployment")
-lock=threading.RLock()
-frame_lock=threading.Lock()
-latest_frame=None
-gesture_history=deque(maxlen=5)
-last_gesture=None
-active_operator="system"
-state={"machine_status":"STOPPED","mode":"IDLE","gesture":"NO HAND","finger_count":0,
-       "production_events":0,"efficiency":85,"temperature":42.0,"pressure":5.2,
-       "vibration":1.4,"camera_ok":False,"alerts":[]}
+from flask import Flask, Response, flash, jsonify, make_response, redirect, render_template, request, session, url_for
 
-def db():
-    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "local-development-only-change-this")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "false").lower() == "true",
+)
 
-def init_db():
-    with db() as c:
-        c.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, display_name TEXT, role TEXT)")
-        c.execute("""CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, created_at TEXT, username TEXT,
-                  gesture TEXT, mode TEXT, machine_status TEXT, event_type TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS sensor_history(id INTEGER PRIMARY KEY, created_at TEXT,
-                  temperature REAL, pressure REAL, vibration REAL, efficiency INTEGER)""")
-        if not c.execute("SELECT id FROM users WHERE username='operator'").fetchone():
-            c.execute("INSERT INTO users(username,password_hash,display_name,role) VALUES(?,?,?,?)",
-                      ("operator",generate_password_hash("forgeiq123"),"Demo Operator","Production Operator"))
-        c.commit()
+DEMO_USERNAME = os.environ.get("FORGEIQ_USERNAME", "operator")
+DEMO_PASSWORD = os.environ.get("FORGEIQ_PASSWORD", "forgeiq123")
 
-def login_required(fn):
-    from functools import wraps
-    @wraps(fn)
-    def inner(*a,**kw):
-        if "username" not in session: return redirect(url_for("login"))
-        return fn(*a,**kw)
-    return inner
+lock = threading.RLock()
+state = {
+    "machine_status": "STOPPED",
+    "mode": "IDLE",
+    "gesture": "NO HAND",
+    "finger_count": 0,
+    "production_events": 0,
+    "efficiency": 85,
+    "temperature": 42.0,
+    "pressure": 5.2,
+    "vibration": 1.4,
+    "alerts": [],
+    "activity": [],
+    "sensor_history": [],
+    "last_sensor_update": 0.0,
+}
 
-def record_event(gesture,mode,status):
-    with db() as c:
-        c.execute("INSERT INTO events(created_at,username,gesture,mode,machine_status,event_type) VALUES(?,?,?,?,?,?)",
-                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),active_operator,
-                   gesture,mode,status,"GESTURE"))
-        c.commit()
 
-def alert(msg,severity="warning"):
-    with lock:
-        if not any(x["message"]==msg for x in state["alerts"]):
-            state["alerts"].insert(0,{"message":msg,"severity":severity,"time":datetime.now().strftime("%H:%M:%S")})
-            state["alerts"]=state["alerts"][:8]
+def now_text():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-@app.route("/login",methods=["GET","POST"])
+
+def add_activity(message, gesture="SYSTEM"):
+    state["activity"].insert(0, {
+        "created_at": now_text(),
+        "gesture": gesture,
+        "message": message,
+        "username": session.get("username", "system"),
+        "machine_status": state["machine_status"],
+        "mode": state["mode"],
+    })
+    del state["activity"][20:]
+
+
+def add_alert(message, severity="warning"):
+    if not any(item["message"] == message for item in state["alerts"]):
+        state["alerts"].insert(0, {
+            "message": message,
+            "severity": severity,
+            "time": datetime.now().strftime("%H:%M:%S"),
+        })
+        del state["alerts"][8:]
+
+
+def update_simulated_sensors():
+    """Generate demo readings; these are not real industrial sensor measurements."""
+    current = time.time()
+    if current - state["last_sensor_update"] < 4:
+        return
+
+    state["temperature"] = round(max(35.0, min(92.0, state["temperature"] + random.uniform(-1.2, 1.4))), 1)
+    state["pressure"] = round(max(3.0, min(9.5, state["pressure"] + random.uniform(-0.18, 0.18))), 2)
+    state["vibration"] = round(max(0.3, min(6.5, state["vibration"] + random.uniform(-0.22, 0.25))), 2)
+
+    if state["mode"] == "PRODUCTION":
+        state["efficiency"] = min(99, state["efficiency"] + random.choice([0, 0, 1]))
+    elif state["mode"] in ("PAUSE", "MAINTENANCE"):
+        state["efficiency"] = max(55, state["efficiency"] - random.choice([0, 0, 1]))
+
+    state["last_sensor_update"] = current
+    state["sensor_history"].append({
+        "created_at": now_text(),
+        "temperature": state["temperature"],
+        "pressure": state["pressure"],
+        "vibration": state["vibration"],
+        "efficiency": state["efficiency"],
+    })
+    del state["sensor_history"][:-24]
+
+    # Illustrative classroom thresholds only; not engineering or safety limits.
+    if state["temperature"] >= 75:
+        add_alert("Demo temperature elevated: " + str(state["temperature"]) + " °C", "danger")
+    if state["pressure"] >= 8:
+        add_alert("Demo pressure elevated: " + str(state["pressure"]) + " bar", "warning")
+    if state["vibration"] >= 4:
+        add_alert("Demo vibration elevated: " + str(state["vibration"]) + " mm/s. Review suggested.", "warning")
+
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if "username" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Please sign in again."}), 401
+            return redirect(url_for("login"))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.get("/healthz")
+def health():
+    return jsonify({"status": "ok", "service": "ForgeIQ"})
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    global active_operator
-    if request.method=="POST":
-        u=request.form.get("username","").strip(); p=request.form.get("password","")
-        with db() as c: user=c.execute("SELECT * FROM users WHERE username=?",(u,)).fetchone()
-        if user and check_password_hash(user["password_hash"],p):
-            session.clear(); session.update(username=user["username"],display_name=user["display_name"],role=user["role"])
-            active_operator=user["username"]
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        valid_user = hmac.compare_digest(username, DEMO_USERNAME)
+        valid_password = hmac.compare_digest(password, DEMO_PASSWORD)
+        if valid_user and valid_password:
+            session.clear()
+            session["username"] = username
+            with lock:
+                add_activity("Operator signed in")
             return redirect(url_for("index"))
         flash("Incorrect username or password.")
     return render_template("login.html")
 
-@app.route("/logout")
+
+@app.get("/logout")
 def logout():
-    session.clear(); return redirect(url_for("login"))
+    session.clear()
+    return redirect(url_for("login"))
 
-def finger_count(hand):
-    lm=hand.landmark
-    return sum(lm[t].y < lm[p].y for t,p in zip([8,12,16,20],[6,10,14,18]))
 
-def gesture_name(n):
-    return {1:"PRODUCTION",2:"INSPECTION",3:"MAINTENANCE",4:"PAUSE"}.get(n,"UNKNOWN")
+@app.get("/")
+@login_required
+def index():
+    return render_template("index.html", display_name=session.get("username", "Operator"))
 
-def apply_gesture(g):
-    global last_gesture
-    with lock:
-        if g=="PRODUCTION":
-            state["machine_status"]="RUNNING"; state["mode"]="PRODUCTION"; state["production_events"]+=1
-        elif g=="INSPECTION":
-            state["machine_status"]="RUNNING"; state["mode"]="INSPECTION"
-        elif g=="MAINTENANCE":
-            state["machine_status"]="STOPPED"; state["mode"]="MAINTENANCE"
-        elif g=="PAUSE":
-            state["machine_status"]="PAUSED"; state["mode"]="PAUSE"
-        mode=state["mode"]; status=state["machine_status"]
-    record_event(g,mode,status); last_gesture=g
 
-def camera_worker():
-    global latest_frame,last_gesture
-    mp_hands=mp.solutions.hands; draw=mp.solutions.drawing_utils
-    cam=cv2.VideoCapture(0)
-    if not cam.isOpened():
-        with lock: state["camera_ok"]=False; state["gesture"]="CAMERA NOT FOUND"
-        alert("Webcam unavailable. Close other camera apps and restart.","warning"); return
-    with lock: state["camera_ok"]=True
+@app.post("/api/gesture")
+@login_required
+def receive_gesture():
+    payload = request.get_json(silent=True) or {}
+    gesture = str(payload.get("gesture", "")).upper()
     try:
-        with mp_hands.Hands(static_image_mode=False,max_num_hands=1,min_detection_confidence=.7,min_tracking_confidence=.7) as hands:
-            while True:
-                ok,frame=cam.read()
-                if not ok: time.sleep(.05); continue
-                frame=cv2.flip(frame,1); rgb=cv2.cvtColor(frame,cv2.COLOR_BGR2RGB); result=hands.process(rgb)
-                g="NO HAND"; count=0
-                if result.multi_hand_landmarks:
-                    hand=result.multi_hand_landmarks[0]; draw.draw_landmarks(frame,hand,mp_hands.HAND_CONNECTIONS)
-                    count=finger_count(hand); candidate=gesture_name(count)
-                    if candidate!="UNKNOWN": gesture_history.append(candidate)
-                    else: gesture_history.clear()
-                    if len(gesture_history)==5:
-                        stable=max(set(gesture_history),key=gesture_history.count)
-                        if gesture_history.count(stable)>=4:
-                            g=stable
-                            if stable!=last_gesture: apply_gesture(stable)
-                        else: g="DETECTING"
-                    else: g="DETECTING"
-                else:
-                    gesture_history.clear(); last_gesture=None
-                with lock: state["gesture"]=g; state["finger_count"]=count
-                cv2.putText(frame,f"Gesture: {g}",(16,32),cv2.FONT_HERSHEY_SIMPLEX,.7,(50,225,190),2)
-                cv2.putText(frame,f"Fingers: {count}",(16,63),cv2.FONT_HERSHEY_SIMPLEX,.6,(255,255,255),2)
-                ok,buf=cv2.imencode(".jpg",frame,[int(cv2.IMWRITE_JPEG_QUALITY),78])
-                if ok:
-                    with frame_lock: latest_frame=buf.tobytes()
-    finally: cam.release()
+        fingers = int(payload.get("finger_count", 0))
+    except (TypeError, ValueError):
+        fingers = 0
 
-def sensor_worker():
-    while True:
-        time.sleep(3)
-        with lock:
-            state["temperature"]=round(max(35,min(92,state["temperature"]+random.uniform(-1.2,1.4))),1)
-            state["pressure"]=round(max(3,min(9.5,state["pressure"]+random.uniform(-.18,.18))),2)
-            state["vibration"]=round(max(.3,min(6.5,state["vibration"]+random.uniform(-.22,.25))),2)
-            if state["mode"]=="PRODUCTION": state["efficiency"]=min(99,state["efficiency"]+random.choice([0,0,1]))
-            elif state["mode"] in ("PAUSE","MAINTENANCE"): state["efficiency"]=max(55,state["efficiency"]-random.choice([0,0,1]))
-            t,p,v,e=state["temperature"],state["pressure"],state["vibration"],state["efficiency"]
-        # Illustrative demo thresholds only; not safety limits.
-        if t>=75: alert(f"Demo temperature elevated: {t} °C","danger")
-        if p>=8: alert(f"Demo pressure elevated: {p} bar","warning")
-        if v>=4: alert(f"Demo vibration elevated: {v} mm/s. Maintenance review suggested.","warning")
-        with db() as c:
-            c.execute("INSERT INTO sensor_history(created_at,temperature,pressure,vibration,efficiency) VALUES(?,?,?,?,?)",
-                      (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),t,p,v,e)); c.commit()
+    modes = {
+        "PRODUCTION": ("RUNNING", "PRODUCTION"),
+        "INSPECTION": ("RUNNING", "INSPECTION"),
+        "MAINTENANCE": ("STOPPED", "MAINTENANCE"),
+        "PAUSE": ("PAUSED", "PAUSE"),
+    }
+    if gesture not in modes:
+        return jsonify({"error": "Unrecognised gesture command."}), 400
 
-def video_stream():
-    while True:
-        with frame_lock: frame=latest_frame
-        if frame: yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"+frame+b"\r\n"
-        time.sleep(.04)
+    with lock:
+        state["machine_status"], state["mode"] = modes[gesture]
+        state["gesture"] = gesture
+        state["finger_count"] = max(0, min(4, fingers))
+        if gesture == "PRODUCTION":
+            state["production_events"] += 1
+        add_activity("Gesture command: " + gesture.title(), gesture)
+        return jsonify({
+            "ok": True,
+            "machine_status": state["machine_status"],
+            "mode": state["mode"],
+            "production_events": state["production_events"],
+        })
 
-@app.route("/")
+
+@app.post("/api/gesture/release")
 @login_required
-def index(): return render_template("index.html",display_name=session.get("display_name"),role=session.get("role"))
+def release_gesture():
+    with lock:
+        state["gesture"] = "NO HAND"
+        state["finger_count"] = 0
+    return jsonify({"ok": True})
 
-@app.route("/video_feed")
-@login_required
-def video_feed(): return Response(video_stream(),mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route("/api/status")
+@app.get("/api/status")
 @login_required
 def api_status():
-    with lock: d=dict(state); d["alerts"]=list(state["alerts"])
-    with db() as c:
-        d["activity"]=[dict(x) for x in c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8")]
-        d["event_total"]=c.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    d["clock"]=datetime.now().strftime("%d %b %Y • %H:%M:%S")
-    return jsonify(d)
+    with lock:
+        update_simulated_sensors()
+        result = {key: value for key, value in state.items() if key != "last_sensor_update"}
+        result["alerts"] = list(state["alerts"])
+        result["activity"] = list(state["activity"][:8])
+    result["clock"] = datetime.now().strftime("%d %b %Y • %H:%M:%S")
+    result["operator"] = session.get("username", "Operator")
+    return jsonify(result)
 
-@app.route("/api/analytics")
+
+@app.get("/api/analytics")
 @login_required
 def analytics():
-    with db() as c:
-        sensors=[dict(x) for x in c.execute("SELECT * FROM (SELECT * FROM sensor_history ORDER BY id DESC LIMIT 24) ORDER BY id")]
-        hours=[dict(x) for x in c.execute("""SELECT substr(created_at,12,2) hour,COUNT(*) total FROM events
-                 WHERE date(created_at)=date('now','localtime') GROUP BY hour ORDER BY hour""")]
-    return jsonify({"sensors":sensors,"production_by_hour":[{"hour":x["hour"]+":00","total":x["total"]} for x in hours]})
+    with lock:
+        samples = list(state["sensor_history"])
+        activities = list(state["activity"])
+    hourly = {}
+    for item in activities:
+        if item.get("gesture") in ("PRODUCTION", "INSPECTION", "MAINTENANCE", "PAUSE"):
+            hour = item["created_at"][11:13] + ":00"
+            hourly[hour] = hourly.get(hour, 0) + 1
+    return jsonify({
+        "sensors": samples,
+        "production_by_hour": [{"hour": key, "total": hourly[key]} for key in sorted(hourly)],
+    })
 
-@app.route("/reports/production.csv")
-@login_required
-def export_csv():
-    out=io.StringIO(); w=csv.writer(out)
-    w.writerow(["Timestamp","Operator","Gesture","Mode","Machine Status","Event Type"])
-    with db() as c:
-        for row in c.execute("SELECT created_at,username,gesture,mode,machine_status,event_type FROM events ORDER BY id DESC"): w.writerow(list(row))
-    res=make_response("\\ufeff"+out.getvalue())
-    res.headers["Content-Type"]="text/csv; charset=utf-8"
-    res.headers["Content-Disposition"]="attachment; filename=forgeiq_production_report.csv"
-    return res
 
-@app.route("/api/clear-alerts",methods=["POST"])
+@app.post("/api/clear-alerts")
 @login_required
 def clear_alerts():
-    with lock: state["alerts"]=[]
-    return jsonify({"ok":True})
+    with lock:
+        state["alerts"] = []
+    return jsonify({"ok": True})
 
-init_db()
-if __name__=="__main__":
-    threading.Thread(target=camera_worker,daemon=True).start()
-    threading.Thread(target=sensor_worker,daemon=True).start()
-    print("\\nForgeIQ Pro: http://127.0.0.1:5000\\nDemo login: operator / forgeiq123\\n")
-    app.run(host="127.0.0.1",port=5000,debug=False,threaded=True)
+
+@app.get("/reports/production.csv")
+@login_required
+def export_csv():
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Timestamp", "Operator", "Gesture", "Mode", "Machine Status"])
+    with lock:
+        rows = list(state["activity"])
+    for item in rows:
+        writer.writerow([
+            item["created_at"], item["username"], item["gesture"],
+            item["mode"], item["machine_status"],
+        ])
+    response = make_response("\ufeff" + output.getvalue())
+    response.headers["Content-Type"] = "text/csv; charset=utf-8"
+    response.headers["Content-Disposition"] = "attachment; filename=forgeiq_activity_report.csv"
+    return response
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=False)
