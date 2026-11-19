@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ForgeIQ | Operator Login</title><link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"></head>
+<body class="login-body"><main class="login-card">
+<div class="brand login-brand"><div class="brand-mark">F</div><div><strong>FORGE<span>IQ</span></strong><small>INDUSTRIAL INTELLIGENCE</small></div></div>
+<div class="eyebrow">WORKSPACE ACCESS</div><h1>Operator sign in</h1><p class="login-sub">Sign in to access the ForgeIQ monitoring dashboard.</p>
+{% with messages = get_flashed_messages() %}{% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
+<form method="post"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required placeholder="Enter username"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter password"><button class="primary-button" type="submit">Sign in <span>→</span></button></form>
+<p class="login-foot">DEMO APPLICATION • CHANGE DEFAULT CREDENTIALS IN HOST SETTINGS</p>
+</main></body></html>
